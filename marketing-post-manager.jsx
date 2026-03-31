@@ -1,0 +1,866 @@
+// ============================================================
+// Marketing Post Manager — React + Firebase
+// Channels: LinkedIn, WordPress Blog
+// AI: Claude API (swap CLAUDE_API_KEY) or OpenAI (see generateWithAI)
+// Publishing: LinkedIn API + WordPress REST API
+// ============================================================
+// SETUP INSTRUCTIONS:
+//  1. Create a Firebase project → enable Firestore
+//  2. Fill in FIREBASE_CONFIG below
+//  3. Fill in your API keys in the CONFIG section
+//  4. For LinkedIn: create a LinkedIn app → get access token (OAuth2)
+//  5. For WordPress: enable Application Passwords in WP settings
+// ============================================================
+
+import { useState, useEffect, useCallback } from "react";
+import { initializeApp } from "firebase/app";
+import {
+  getFirestore,
+  collection,
+  addDoc,
+  getDocs,
+  updateDoc,
+  deleteDoc,
+  doc,
+  query,
+  orderBy,
+  serverTimestamp,
+} from "firebase/firestore";
+
+// ─── CONFIG — fill these in ───────────────────────────────────
+const FIREBASE_CONFIG = {
+  apiKey:            import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain:        import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId:         import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket:     import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId:             import.meta.env.VITE_FIREBASE_APP_ID,
+  measurementId:     import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
+};
+
+const CONFIG = {
+  CLAUDE_API_KEY:        import.meta.env.VITE_CLAUDE_API_KEY,
+  CLAUDE_MODEL:          import.meta.env.VITE_CLAUDE_MODEL ?? "claude-opus-4-6",
+  LINKEDIN_ACCESS_TOKEN: import.meta.env.VITE_LINKEDIN_ACCESS_TOKEN,
+  LINKEDIN_PERSON_URN:   import.meta.env.VITE_LINKEDIN_PERSON_URN,
+  WP_URL:                import.meta.env.VITE_WP_URL,
+  WP_USERNAME:           import.meta.env.VITE_WP_USERNAME,
+  WP_APP_PASSWORD:       import.meta.env.VITE_WP_APP_PASSWORD,
+};
+// ─────────────────────────────────────────────────────────────
+
+// Init Firebase
+let db;
+try {
+  const app = initializeApp(FIREBASE_CONFIG);
+  db = getFirestore(app);
+} catch (e) {
+  console.warn("Firebase not initialised — using local state only:", e.message);
+}
+
+// ─── AI Generation ───────────────────────────────────────────
+async function generateWithAI(prompt, channel) {
+  const systemPrompts = {
+    linkedin: `You are an expert LinkedIn content creator. Write engaging, professional LinkedIn posts.
+Use line breaks for readability. Include 3-5 relevant hashtags at the end. Keep it under 3000 characters.
+Focus on insights, storytelling, and professional value. Do NOT use markdown headers.`,
+    wordpress: `You are an expert blog writer. Write a full, well-structured WordPress blog post in HTML.
+Use <h2> and <h3> for headings, <p> for paragraphs, <ul>/<ol> for lists.
+Include an engaging introduction, structured body sections, and a clear conclusion.
+Aim for 600-1200 words. Make it SEO-friendly.`,
+  };
+
+  const response = await fetch("/api/anthropic/v1/messages", {
+    method: "POST",
+    headers: {
+      "x-api-key": CONFIG.CLAUDE_API_KEY,
+      "anthropic-version": "2023-06-01",
+"content-type": "application/json",
+      // NOTE: In production, proxy this through your backend — never expose API keys client-side
+    },
+    body: JSON.stringify({
+      model: CONFIG.CLAUDE_MODEL,
+      max_tokens: 2048,
+      system: systemPrompts[channel],
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json();
+    throw new Error(err.error?.message || "AI generation failed");
+  }
+
+  const data = await response.json();
+  return data.content[0].text;
+}
+
+// ─── Copy to clipboard (manual publish) ──────────────────────
+async function copyToClipboard(text) {
+  await navigator.clipboard.writeText(text);
+}
+
+// ─── Firestore helpers ────────────────────────────────────────
+async function saveToDB(post) {
+  if (!db) return { id: `local-${Date.now()}` };
+  const docRef = await addDoc(collection(db, "posts"), {
+    ...post,
+    createdAt: serverTimestamp(),
+  });
+  return docRef;
+}
+
+async function loadFromDB() {
+  if (!db) return [];
+  const q = query(collection(db, "posts"), orderBy("createdAt", "desc"));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+async function updateInDB(id, data) {
+  if (!db || id.startsWith("local-")) return;
+  await updateDoc(doc(db, "posts", id), data);
+}
+
+async function deleteFromDB(id) {
+  if (!db || id.startsWith("local-")) return;
+  await deleteDoc(doc(db, "posts", id));
+}
+
+// ─── Status badge ─────────────────────────────────────────────
+const STATUS_STYLES = {
+  draft:     "bg-gray-100 text-gray-600",
+  pending:   "bg-yellow-100 text-yellow-700",
+  approved:  "bg-blue-100 text-blue-700",
+  published: "bg-green-100 text-green-700",
+  rejected:  "bg-red-100 text-red-700",
+};
+
+const CHANNEL_STYLES = {
+  linkedin:  "bg-blue-600 text-white",
+  wordpress: "bg-indigo-600 text-white",
+};
+
+const CHANNEL_ICONS = {
+  linkedin:  "in",
+  wordpress: "WP",
+};
+
+function Badge({ label, style }) {
+  return (
+    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${style}`}>
+      {label}
+    </span>
+  );
+}
+
+// ─── Main App ─────────────────────────────────────────────────
+export default function App() {
+  const [posts, setPosts] = useState([]);
+  const [view, setView] = useState("dashboard"); // dashboard | create | detail
+  const [selectedPost, setSelectedPost] = useState(null);
+  const [filterStatus, setFilterStatus] = useState("all");
+  const [filterChannel, setFilterChannel] = useState("all");
+  const [loading, setLoading] = useState(false);
+  const [toast, setToast] = useState(null);
+
+  // ── Load posts ──
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      try {
+        const data = await loadFromDB();
+        setPosts(data);
+      } catch (e) {
+        showToast("Could not load from Firebase — using local state", "warn");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  function showToast(msg, type = "success") {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3500);
+  }
+
+  // ── Create post ──
+  async function handleCreatePost(postData) {
+    setLoading(true);
+    try {
+      const newPost = {
+        ...postData,
+        status: "pending",
+        createdAt: new Date().toISOString(),
+      };
+      const ref = await saveToDB(newPost);
+      newPost.id = ref.id;
+      setPosts((prev) => [newPost, ...prev]);
+      showToast("Post created — awaiting your approval");
+      setView("dashboard");
+    } catch (e) {
+      showToast("Error saving post: " + e.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // ── Approve post ──
+  async function handleApprove(post) {
+    setLoading(true);
+    try {
+      await updateInDB(post.id, { status: "approved" });
+      setPosts((prev) =>
+        prev.map((p) => (p.id === post.id ? { ...p, status: "approved" } : p))
+      );
+      setSelectedPost((p) => p && { ...p, status: "approved" });
+      showToast("Post approved!");
+    } catch (e) {
+      showToast("Error: " + e.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // ── Reject post ──
+  async function handleReject(post) {
+    setLoading(true);
+    try {
+      await updateInDB(post.id, { status: "rejected" });
+      setPosts((prev) =>
+        prev.map((p) => (p.id === post.id ? { ...p, status: "rejected" } : p))
+      );
+      setSelectedPost((p) => p && { ...p, status: "rejected" });
+      showToast("Post rejected", "warn");
+    } catch (e) {
+      showToast("Error: " + e.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // ── Copy post content to clipboard ──
+  async function handlePublish(post) {
+    if (post.status !== "approved") {
+      showToast("Approve the post before copying", "warn");
+      return;
+    }
+    setLoading(true);
+    try {
+      await copyToClipboard(post.content);
+      await updateInDB(post.id, { status: "published" });
+      setPosts((prev) =>
+        prev.map((p) => (p.id === post.id ? { ...p, status: "published" } : p))
+      );
+      setSelectedPost((p) => p && { ...p, status: "published" });
+      showToast(`Copied! Paste it into ${post.channel === "linkedin" ? "LinkedIn" : "WordPress"}.`);
+    } catch (e) {
+      showToast("Copy failed: " + e.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // ── Delete post ──
+  async function handleDelete(postId) {
+    if (!confirm("Delete this post?")) return;
+    await deleteFromDB(postId);
+    setPosts((prev) => prev.filter((p) => p.id !== postId));
+    if (selectedPost?.id === postId) {
+      setView("dashboard");
+      setSelectedPost(null);
+    }
+    showToast("Post deleted");
+  }
+
+  // ── Update content ──
+  async function handleUpdateContent(postId, newContent, newTitle) {
+    await updateInDB(postId, { content: newContent, title: newTitle, status: "pending" });
+    setPosts((prev) =>
+      prev.map((p) =>
+        p.id === postId ? { ...p, content: newContent, title: newTitle, status: "pending" } : p
+      )
+    );
+    setSelectedPost((p) =>
+      p ? { ...p, content: newContent, title: newTitle, status: "pending" } : p
+    );
+    showToast("Post updated — re-approval required");
+  }
+
+  // ── Filtered posts ──
+  const filtered = posts.filter((p) => {
+    const matchStatus = filterStatus === "all" || p.status === filterStatus;
+    const matchChannel = filterChannel === "all" || p.channel === filterChannel;
+    return matchStatus && matchChannel;
+  });
+
+  const counts = {
+    all: posts.length,
+    pending: posts.filter((p) => p.status === "pending").length,
+    approved: posts.filter((p) => p.status === "approved").length,
+    published: posts.filter((p) => p.status === "published").length,
+    rejected: posts.filter((p) => p.status === "rejected").length,
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-50 font-sans">
+      {/* ── Topbar ── */}
+      <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between sticky top-0 z-10 shadow-sm">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-600 to-indigo-600 flex items-center justify-center">
+            <span className="text-white text-xs font-bold">M</span>
+          </div>
+          <h1 className="text-lg font-bold text-gray-900">PostFlow</h1>
+          <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">Marketing Manager</span>
+        </div>
+        <div className="flex items-center gap-3">
+          {view !== "dashboard" && (
+            <button
+              onClick={() => { setView("dashboard"); setSelectedPost(null); }}
+              className="text-sm text-gray-500 hover:text-gray-800 flex items-center gap-1"
+            >
+              ← Dashboard
+            </button>
+          )}
+          <button
+            onClick={() => { setView("create"); setSelectedPost(null); }}
+            className="bg-blue-600 text-white text-sm px-4 py-2 rounded-lg hover:bg-blue-700 transition font-medium"
+          >
+            + New Post
+          </button>
+        </div>
+      </header>
+
+      {/* ── Toast ── */}
+      {toast && (
+        <div
+          className={`fixed top-16 right-6 z-50 px-4 py-3 rounded-lg shadow-lg text-sm font-medium transition-all ${
+            toast.type === "error"
+              ? "bg-red-600 text-white"
+              : toast.type === "warn"
+              ? "bg-yellow-500 text-white"
+              : "bg-green-600 text-white"
+          }`}
+        >
+          {toast.msg}
+        </div>
+      )}
+
+      {/* ── Loading overlay ── */}
+      {loading && (
+        <div className="fixed inset-0 bg-white bg-opacity-60 z-40 flex items-center justify-center">
+          <div className="flex items-center gap-2 text-blue-600 font-medium">
+            <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24" fill="none">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+            </svg>
+            Processing…
+          </div>
+        </div>
+      )}
+
+      <main className="max-w-6xl mx-auto px-6 py-8">
+        {/* ── Dashboard ── */}
+        {view === "dashboard" && (
+          <Dashboard
+            posts={filtered}
+            counts={counts}
+            filterStatus={filterStatus}
+            filterChannel={filterChannel}
+            onFilterStatus={setFilterStatus}
+            onFilterChannel={setFilterChannel}
+            onSelect={(p) => { setSelectedPost(p); setView("detail"); }}
+            onDelete={handleDelete}
+            onApprove={handleApprove}
+            onReject={handleReject}
+            onPublish={handlePublish}
+          />
+        )}
+
+        {/* ── Create ── */}
+        {view === "create" && (
+          <CreatePost onCreate={handleCreatePost} onCancel={() => setView("dashboard")} />
+        )}
+
+        {/* ── Detail / Edit ── */}
+        {view === "detail" && selectedPost && (
+          <PostDetail
+            post={selectedPost}
+            onApprove={handleApprove}
+            onReject={handleReject}
+            onPublish={handlePublish}
+            onUpdate={handleUpdateContent}
+            onDelete={handleDelete}
+            onBack={() => { setView("dashboard"); setSelectedPost(null); }}
+          />
+        )}
+      </main>
+    </div>
+  );
+}
+
+// ─── Dashboard ────────────────────────────────────────────────
+function Dashboard({
+  posts, counts, filterStatus, filterChannel,
+  onFilterStatus, onFilterChannel, onSelect, onDelete, onApprove, onReject, onPublish,
+}) {
+  const statuses = ["all", "pending", "approved", "published", "rejected"];
+
+  return (
+    <div>
+      {/* Stats row */}
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+        {statuses.map((s) => (
+          <button
+            key={s}
+            onClick={() => onFilterStatus(s)}
+            className={`rounded-xl p-4 text-left transition border ${
+              filterStatus === s
+                ? "border-blue-400 bg-blue-50"
+                : "border-gray-200 bg-white hover:border-gray-300"
+            }`}
+          >
+            <div className="text-2xl font-bold text-gray-900">{counts[s] ?? 0}</div>
+            <div className="text-xs text-gray-500 capitalize mt-0.5">{s === "all" ? "Total Posts" : s}</div>
+          </button>
+        ))}
+      </div>
+
+      {/* Filters */}
+      <div className="flex items-center gap-3 mb-5 flex-wrap">
+        <span className="text-sm text-gray-500">Channel:</span>
+        {["all", "linkedin", "wordpress"].map((c) => (
+          <button
+            key={c}
+            onClick={() => onFilterChannel(c)}
+            className={`text-xs px-3 py-1.5 rounded-full border transition font-medium ${
+              filterChannel === c
+                ? "bg-gray-900 text-white border-gray-900"
+                : "bg-white text-gray-600 border-gray-300 hover:border-gray-500"
+            }`}
+          >
+            {c === "all" ? "All Channels" : c === "linkedin" ? "LinkedIn" : "WordPress"}
+          </button>
+        ))}
+      </div>
+
+      {/* Post list */}
+      {posts.length === 0 ? (
+        <div className="text-center py-20 text-gray-400">
+          <div className="text-4xl mb-3">📝</div>
+          <p className="text-lg font-medium text-gray-500">No posts yet</p>
+          <p className="text-sm mt-1">Create your first post using the "New Post" button</p>
+        </div>
+      ) : (
+        <div className="grid gap-3">
+          {posts.map((post) => (
+            <PostCard
+              key={post.id}
+              post={post}
+              onSelect={onSelect}
+              onDelete={onDelete}
+              onApprove={onApprove}
+              onReject={onReject}
+              onPublish={onPublish}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Post Card ────────────────────────────────────────────────
+function PostCard({ post, onSelect, onDelete, onApprove, onReject, onPublish }) {
+  const preview = post.content?.replace(/<[^>]+>/g, "").slice(0, 160) + "…";
+  const date = post.createdAt
+    ? new Date(typeof post.createdAt === "string" ? post.createdAt : post.createdAt.toDate?.() ?? post.createdAt).toLocaleDateString()
+    : "";
+
+  return (
+    <div
+      className="bg-white border border-gray-200 rounded-xl p-5 hover:border-blue-300 transition cursor-pointer group"
+      onClick={() => onSelect(post)}
+    >
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-2 flex-wrap">
+            <span className={`text-xs font-bold px-2 py-0.5 rounded ${CHANNEL_STYLES[post.channel]}`}>
+              {CHANNEL_ICONS[post.channel]} {post.channel === "linkedin" ? "LinkedIn" : "WordPress"}
+            </span>
+            <Badge label={post.status} style={STATUS_STYLES[post.status]} />
+            <span className="text-xs text-gray-400">{date}</span>
+          </div>
+          {post.title && (
+            <h3 className="font-semibold text-gray-900 text-sm mb-1 truncate">{post.title}</h3>
+          )}
+          <p className="text-sm text-gray-500 line-clamp-2">{preview}</p>
+        </div>
+
+        {/* Actions */}
+        <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition" onClick={(e) => e.stopPropagation()}>
+          {post.status === "pending" && (
+            <>
+              <button
+                onClick={() => onApprove(post)}
+                className="text-xs bg-blue-50 text-blue-700 px-3 py-1.5 rounded-lg hover:bg-blue-100 font-medium"
+              >
+                ✓ Approve
+              </button>
+              <button
+                onClick={() => onReject(post)}
+                className="text-xs bg-red-50 text-red-600 px-3 py-1.5 rounded-lg hover:bg-red-100 font-medium"
+              >
+                ✗ Reject
+              </button>
+            </>
+          )}
+          {post.status === "approved" && (
+            <button
+              onClick={() => onPublish(post)}
+              className="text-xs bg-green-50 text-green-700 px-3 py-1.5 rounded-lg hover:bg-green-100 font-medium"
+            >
+              📋 Copy
+            </button>
+          )}
+          <button
+            onClick={() => onDelete(post.id)}
+            className="text-xs text-gray-400 hover:text-red-500 px-2 py-1.5 rounded-lg"
+          >
+            🗑
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Create Post ──────────────────────────────────────────────
+function CreatePost({ onCreate, onCancel }) {
+  const [channel, setChannel] = useState("linkedin");
+  const [title, setTitle] = useState("");
+  const [prompt, setPrompt] = useState("");
+  const [content, setContent] = useState("");
+  const [generating, setGenerating] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handleGenerate() {
+    if (!prompt.trim()) { setError("Please enter a prompt"); return; }
+    setGenerating(true);
+    setError("");
+    try {
+      const result = await generateWithAI(prompt, channel);
+      setContent(result);
+    } catch (e) {
+      setError("Generation failed: " + e.message);
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  function handleSubmit() {
+    if (!content.trim()) { setError("Generate or write content first"); return; }
+    if (channel === "wordpress" && !title.trim()) { setError("WordPress posts need a title"); return; }
+    onCreate({ channel, title, content, prompt });
+  }
+
+  return (
+    <div className="max-w-3xl mx-auto">
+      <h2 className="text-xl font-bold text-gray-900 mb-6">Create New Post</h2>
+
+      {/* Channel */}
+      <div className="bg-white border border-gray-200 rounded-xl p-5 mb-4">
+        <label className="block text-sm font-semibold text-gray-700 mb-3">Channel</label>
+        <div className="flex gap-3">
+          {[
+            { id: "linkedin", label: "LinkedIn", icon: "in", desc: "Professional post" },
+            { id: "wordpress", label: "WordPress Blog", icon: "WP", desc: "Full blog article" },
+          ].map((ch) => (
+            <button
+              key={ch.id}
+              onClick={() => setChannel(ch.id)}
+              className={`flex-1 border-2 rounded-xl p-4 text-left transition ${
+                channel === ch.id
+                  ? "border-blue-500 bg-blue-50"
+                  : "border-gray-200 hover:border-gray-300"
+              }`}
+            >
+              <div className={`inline-flex items-center justify-center w-8 h-8 rounded text-xs font-bold mb-2 ${CHANNEL_STYLES[ch.id]}`}>
+                {ch.icon}
+              </div>
+              <div className="font-semibold text-gray-900 text-sm">{ch.label}</div>
+              <div className="text-xs text-gray-500">{ch.desc}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Title (WordPress only) */}
+      {channel === "wordpress" && (
+        <div className="bg-white border border-gray-200 rounded-xl p-5 mb-4">
+          <label className="block text-sm font-semibold text-gray-700 mb-2">Post Title</label>
+          <input
+            type="text"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="e.g. 10 Tips for Better Marketing in 2026"
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+          />
+        </div>
+      )}
+
+      {/* Prompt */}
+      <div className="bg-white border border-gray-200 rounded-xl p-5 mb-4">
+        <label className="block text-sm font-semibold text-gray-700 mb-2">
+          What should this post be about?
+        </label>
+        <textarea
+          rows={3}
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          placeholder={
+            channel === "linkedin"
+              ? "e.g. Share insights on AI transforming marketing teams in 2026, include a personal story angle"
+              : "e.g. Write a blog post about 5 ways to use AI for content marketing, SEO-focused, targeting marketing managers"
+          }
+          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 resize-none"
+        />
+        <button
+          onClick={handleGenerate}
+          disabled={generating}
+          className="mt-3 bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-sm px-5 py-2.5 rounded-lg hover:opacity-90 disabled:opacity-60 transition font-medium flex items-center gap-2"
+        >
+          {generating ? (
+            <>
+              <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+              </svg>
+              Generating…
+            </>
+          ) : (
+            "✨ Generate with AI"
+          )}
+        </button>
+      </div>
+
+      {/* Content editor */}
+      <div className="bg-white border border-gray-200 rounded-xl p-5 mb-4">
+        <div className="flex items-center justify-between mb-2">
+          <label className="text-sm font-semibold text-gray-700">
+            {channel === "wordpress" ? "Article HTML" : "Post Content"}
+          </label>
+          {content && (
+            <span className="text-xs text-gray-400">{content.length} chars</span>
+          )}
+        </div>
+        <textarea
+          rows={channel === "wordpress" ? 14 : 10}
+          value={content}
+          onChange={(e) => setContent(e.target.value)}
+          placeholder={
+            channel === "linkedin"
+              ? "AI-generated content will appear here. You can also write or edit directly…"
+              : "AI-generated HTML will appear here. You can also write or edit directly…"
+          }
+          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-400 resize-none"
+        />
+        {channel === "wordpress" && content && (
+          <details className="mt-3">
+            <summary className="text-xs text-blue-600 cursor-pointer hover:underline">Preview rendered HTML</summary>
+            <div
+              className="mt-2 prose prose-sm max-w-none border rounded-lg p-4 bg-gray-50 text-sm"
+              dangerouslySetInnerHTML={{ __html: content }}
+            />
+          </details>
+        )}
+      </div>
+
+      {error && (
+        <div className="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 rounded-lg mb-4">
+          {error}
+        </div>
+      )}
+
+      <div className="flex gap-3">
+        <button
+          onClick={handleSubmit}
+          className="bg-blue-600 text-white text-sm px-6 py-2.5 rounded-lg hover:bg-blue-700 transition font-medium"
+        >
+          Save for Approval →
+        </button>
+        <button
+          onClick={onCancel}
+          className="text-gray-600 text-sm px-4 py-2.5 rounded-lg border border-gray-300 hover:bg-gray-50 transition"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Post Detail ──────────────────────────────────────────────
+function PostDetail({ post, onApprove, onReject, onPublish, onUpdate, onDelete, onBack }) {
+  const [editing, setEditing] = useState(false);
+  const [editContent, setEditContent] = useState(post.content);
+  const [editTitle, setEditTitle] = useState(post.title || "");
+
+  useEffect(() => {
+    setEditContent(post.content);
+    setEditTitle(post.title || "");
+  }, [post]);
+
+  function saveEdit() {
+    onUpdate(post.id, editContent, editTitle);
+    setEditing(false);
+  }
+
+  const date = post.createdAt
+    ? new Date(typeof post.createdAt === "string" ? post.createdAt : post.createdAt.toDate?.() ?? post.createdAt).toLocaleString()
+    : "";
+
+  return (
+    <div className="max-w-3xl mx-auto">
+      {/* Header */}
+      <div className="flex items-start justify-between mb-6">
+        <div>
+          <div className="flex items-center gap-2 mb-2 flex-wrap">
+            <span className={`text-xs font-bold px-2 py-0.5 rounded ${CHANNEL_STYLES[post.channel]}`}>
+              {CHANNEL_ICONS[post.channel]} {post.channel === "linkedin" ? "LinkedIn" : "WordPress"}
+            </span>
+            <Badge label={post.status} style={STATUS_STYLES[post.status]} />
+            <span className="text-xs text-gray-400">{date}</span>
+          </div>
+          {post.title && (
+            <h2 className="text-xl font-bold text-gray-900">{post.title}</h2>
+          )}
+        </div>
+        <button onClick={onBack} className="text-sm text-gray-500 hover:text-gray-800">← Back</button>
+      </div>
+
+      {/* Prompt used */}
+      {post.prompt && (
+        <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 mb-4">
+          <p className="text-xs font-semibold text-gray-500 uppercase mb-1">Prompt used</p>
+          <p className="text-sm text-gray-700">{post.prompt}</p>
+        </div>
+      )}
+
+      {/* Content */}
+      <div className="bg-white border border-gray-200 rounded-xl p-5 mb-4">
+        <div className="flex items-center justify-between mb-3">
+          <p className="text-sm font-semibold text-gray-700">Content</p>
+          {!editing && post.status !== "published" && (
+            <button
+              onClick={() => setEditing(true)}
+              className="text-xs text-blue-600 hover:underline"
+            >
+              Edit
+            </button>
+          )}
+        </div>
+
+        {editing ? (
+          <div>
+            {post.channel === "wordpress" && (
+              <input
+                type="text"
+                value={editTitle}
+                onChange={(e) => setEditTitle(e.target.value)}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                placeholder="Post title"
+              />
+            )}
+            <textarea
+              rows={14}
+              value={editContent}
+              onChange={(e) => setEditContent(e.target.value)}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-400 resize-none"
+            />
+            <div className="flex gap-2 mt-3">
+              <button
+                onClick={saveEdit}
+                className="bg-blue-600 text-white text-sm px-4 py-2 rounded-lg hover:bg-blue-700"
+              >
+                Save Changes
+              </button>
+              <button
+                onClick={() => { setEditing(false); setEditContent(post.content); setEditTitle(post.title || ""); }}
+                className="text-gray-600 text-sm px-4 py-2 rounded-lg border border-gray-300 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : post.channel === "wordpress" ? (
+          <div
+            className="prose prose-sm max-w-none text-sm text-gray-800"
+            dangerouslySetInnerHTML={{ __html: post.content }}
+          />
+        ) : (
+          <pre className="whitespace-pre-wrap text-sm text-gray-800 font-sans leading-relaxed">
+            {post.content}
+          </pre>
+        )}
+      </div>
+
+      {/* Actions */}
+      {post.status !== "published" && (
+        <div className="bg-white border border-gray-200 rounded-xl p-5 mb-4">
+          <p className="text-sm font-semibold text-gray-700 mb-3">Actions</p>
+          <div className="flex flex-wrap gap-3">
+            {post.status === "pending" && (
+              <>
+                <button
+                  onClick={() => onApprove(post)}
+                  className="bg-blue-600 text-white text-sm px-5 py-2.5 rounded-lg hover:bg-blue-700 font-medium"
+                >
+                  ✓ Approve Post
+                </button>
+                <button
+                  onClick={() => onReject(post)}
+                  className="bg-red-50 text-red-600 border border-red-200 text-sm px-5 py-2.5 rounded-lg hover:bg-red-100 font-medium"
+                >
+                  ✗ Reject Post
+                </button>
+              </>
+            )}
+            {post.status === "approved" && (
+              <button
+                onClick={() => onPublish(post)}
+                className="bg-green-600 text-white text-sm px-5 py-2.5 rounded-lg hover:bg-green-700 font-medium"
+              >
+                📋 Copy for {post.channel === "linkedin" ? "LinkedIn" : "WordPress"}
+              </button>
+            )}
+            {post.status === "rejected" && (
+              <button
+                onClick={() => onApprove(post)}
+                className="bg-blue-50 text-blue-600 border border-blue-200 text-sm px-5 py-2.5 rounded-lg hover:bg-blue-100 font-medium"
+              >
+                ↺ Re-approve
+              </button>
+            )}
+            <button
+              onClick={() => onDelete(post.id)}
+              className="text-gray-400 text-sm px-4 py-2.5 rounded-lg border border-gray-200 hover:text-red-500 hover:border-red-200"
+            >
+              Delete Post
+            </button>
+          </div>
+        </div>
+      )}
+
+      {post.status === "published" && (
+        <div className="bg-green-50 border border-green-200 rounded-xl p-5 text-center">
+          <div className="text-2xl mb-2">🎉</div>
+          <p className="font-semibold text-green-800">
+            Copied for {post.channel === "linkedin" ? "LinkedIn" : "WordPress"}!
+          </p>
+          <p className="text-sm text-green-600 mt-1">Content was copied — paste it manually into the platform.</p>
+        </div>
+      )}
+    </div>
+  );
+}
