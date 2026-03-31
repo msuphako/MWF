@@ -16,6 +16,17 @@ export default defineConfig({
           });
         },
       },
+      "/api/openai": {
+        target: "https://api.openai.com",
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/openai/, ""),
+        configure: (proxy) => {
+          proxy.on("proxyReq", (proxyReq) => {
+            proxyReq.removeHeader("origin");
+            proxyReq.removeHeader("referer");
+          });
+        },
+      },
     },
   },
 });

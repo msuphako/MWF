@@ -41,6 +41,8 @@ const FIREBASE_CONFIG = {
 const CONFIG = {
   CLAUDE_API_KEY:        import.meta.env.VITE_CLAUDE_API_KEY,
   CLAUDE_MODEL:          import.meta.env.VITE_CLAUDE_MODEL ?? "claude-opus-4-6",
+  OPENAI_API_KEY:        import.meta.env.VITE_OPENAI_API_KEY,
+  OPENAI_MODEL:          import.meta.env.VITE_OPENAI_MODEL ?? "gpt-4o",
   LINKEDIN_ACCESS_TOKEN: import.meta.env.VITE_LINKEDIN_ACCESS_TOKEN,
   LINKEDIN_PERSON_URN:   import.meta.env.VITE_LINKEDIN_PERSON_URN,
   WP_URL:                import.meta.env.VITE_WP_URL,
@@ -59,40 +61,66 @@ try {
 }
 
 // ─── AI Generation ───────────────────────────────────────────
-async function generateWithAI(prompt, channel) {
-  const systemPrompts = {
-    linkedin: `You are an expert LinkedIn content creator. Write engaging, professional LinkedIn posts.
+const SYSTEM_PROMPTS = {
+  linkedin: `You are an expert LinkedIn content creator. Write engaging, professional LinkedIn posts.
 Use line breaks for readability. Include 3-5 relevant hashtags at the end. Keep it under 3000 characters.
 Focus on insights, storytelling, and professional value. Do NOT use markdown headers.`,
-    wordpress: `You are an expert blog writer. Write a full, well-structured WordPress blog post in HTML.
+  wordpress: `You are an expert blog writer. Write a full, well-structured WordPress blog post in HTML.
 Use <h2> and <h3> for headings, <p> for paragraphs, <ul>/<ol> for lists.
 Include an engaging introduction, structured body sections, and a clear conclusion.
 Aim for 600-1200 words. Make it SEO-friendly.`,
-  };
+};
 
+async function generateWithClaude(prompt, channel) {
   const response = await fetch("/api/anthropic/v1/messages", {
     method: "POST",
     headers: {
       "x-api-key": CONFIG.CLAUDE_API_KEY,
       "anthropic-version": "2023-06-01",
-"content-type": "application/json",
-      // NOTE: In production, proxy this through your backend — never expose API keys client-side
+      "content-type": "application/json",
     },
     body: JSON.stringify({
       model: CONFIG.CLAUDE_MODEL,
       max_tokens: 2048,
-      system: systemPrompts[channel],
+      system: SYSTEM_PROMPTS[channel],
       messages: [{ role: "user", content: prompt }],
     }),
   });
-
   if (!response.ok) {
     const err = await response.json();
-    throw new Error(err.error?.message || "AI generation failed");
+    throw new Error(err.error?.message || "Claude generation failed");
   }
-
   const data = await response.json();
   return data.content[0].text;
+}
+
+async function generateWithOpenAI(prompt, channel) {
+  const response = await fetch("/api/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${CONFIG.OPENAI_API_KEY}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: CONFIG.OPENAI_MODEL,
+      max_tokens: 2048,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPTS[channel] },
+        { role: "user", content: prompt },
+      ],
+    }),
+  });
+  if (!response.ok) {
+    const err = await response.json();
+    throw new Error(err.error?.message || "OpenAI generation failed");
+  }
+  const data = await response.json();
+  return data.choices[0].message.content;
+}
+
+async function generateWithAI(prompt, channel, provider = "claude") {
+  if (provider === "openai") return generateWithOpenAI(prompt, channel);
+  return generateWithClaude(prompt, channel);
 }
 
 // ─── Copy to clipboard (manual publish) ──────────────────────
@@ -536,8 +564,14 @@ function PostCard({ post, onSelect, onDelete, onApprove, onReject, onPublish }) 
 }
 
 // ─── Create Post ──────────────────────────────────────────────
+const AI_PROVIDERS = [
+  { id: "claude", label: "Claude", sub: "Anthropic" },
+  { id: "openai", label: "GPT-4o", sub: "OpenAI" },
+];
+
 function CreatePost({ onCreate, onCancel }) {
   const [channel, setChannel] = useState("linkedin");
+  const [provider, setProvider] = useState("claude");
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
   const [content, setContent] = useState("");
@@ -549,7 +583,7 @@ function CreatePost({ onCreate, onCancel }) {
     setGenerating(true);
     setError("");
     try {
-      const result = await generateWithAI(prompt, channel);
+      const result = await generateWithAI(prompt, channel, provider);
       setContent(result);
     } catch (e) {
       setError("Generation failed: " + e.message);
@@ -590,6 +624,27 @@ function CreatePost({ onCreate, onCancel }) {
               </div>
               <div className="font-semibold text-gray-900 text-sm">{ch.label}</div>
               <div className="text-xs text-gray-500">{ch.desc}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* AI Provider */}
+      <div className="bg-white border border-gray-200 rounded-xl p-5 mb-4">
+        <label className="block text-sm font-semibold text-gray-700 mb-3">AI Model</label>
+        <div className="flex gap-3">
+          {AI_PROVIDERS.map((p) => (
+            <button
+              key={p.id}
+              onClick={() => setProvider(p.id)}
+              className={`flex-1 border-2 rounded-xl px-4 py-3 text-left transition ${
+                provider === p.id
+                  ? "border-indigo-500 bg-indigo-50"
+                  : "border-gray-200 hover:border-gray-300"
+              }`}
+            >
+              <div className="font-semibold text-gray-900 text-sm">{p.label}</div>
+              <div className="text-xs text-gray-500">{p.sub}</div>
             </button>
           ))}
         </div>
