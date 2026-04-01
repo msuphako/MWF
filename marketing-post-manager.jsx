@@ -67,11 +67,13 @@ try {
 const SYSTEM_PROMPTS = {
   linkedin: `You are an expert LinkedIn content creator. Write engaging, professional LinkedIn posts.
 Use line breaks for readability. Include 3-5 relevant hashtags at the end. Keep it under 3000 characters.
-Focus on insights, storytelling, and professional value. Do NOT use markdown headers.`,
+Focus on insights, storytelling, and professional value. Do NOT use markdown headers.
+Return only the post text — no code fences, no extra commentary.`,
   wordpress: `You are an expert blog writer. Write a full, well-structured WordPress blog post in HTML.
 Use <h2> and <h3> for headings, <p> for paragraphs, <ul>/<ol> for lists.
 Include an engaging introduction, structured body sections, and a clear conclusion.
-Aim for 600-1200 words. Make it SEO-friendly.`,
+Aim for 600-1200 words. Make it SEO-friendly.
+Return only the raw HTML — no code fences, no markdown, no extra commentary.`,
 };
 
 const TONES = [
@@ -133,9 +135,15 @@ async function generateWithOpenAI(prompt, channel, tone) {
   return data.choices[0].message.content;
 }
 
+function stripCodeFences(text) {
+  return text.replace(/^```[a-zA-Z]*\n?/, "").replace(/\n?```$/, "").trim();
+}
+
 async function generateWithAI(prompt, channel, provider = "claude", tone = "professional") {
-  if (provider === "openai") return generateWithOpenAI(prompt, channel, tone);
-  return generateWithClaude(prompt, channel, tone);
+  const raw = provider === "openai"
+    ? await generateWithOpenAI(prompt, channel, tone)
+    : await generateWithClaude(prompt, channel, tone);
+  return stripCodeFences(raw);
 }
 
 // ─── Copy to clipboard (manual publish) ──────────────────────
@@ -860,6 +868,57 @@ function CreatePost({ onCreate, onCancel }) {
   );
 }
 
+// ─── Image editing helpers ────────────────────────────────────
+function buildImgTag(src, alt, size, align) {
+  let style = `max-width:${size};`;
+  if (align === "center") style += " display:block; margin-left:auto; margin-right:auto;";
+  else if (align === "left")  style += " float:left; margin:0 16px 8px 0;";
+  else if (align === "right") style += " float:right; margin:0 0 8px 16px;";
+  else style += " display:block;";
+  return `<img src="${src}" alt="${alt}" style="${style}" />`;
+}
+
+function parseImagesFromHtml(html) {
+  const div = document.createElement("div");
+  div.innerHTML = html;
+  return Array.from(div.querySelectorAll("img")).map((img) => {
+    const style = img.getAttribute("style") || "";
+    const sizeMatch = style.match(/max-width:\s*([^;]+)/);
+    const size = sizeMatch ? sizeMatch[1].trim() : "100%";
+    let align = "none";
+    if (style.includes("margin-left:auto") || style.includes("margin:0 auto")) align = "center";
+    else if (style.includes("float:left"))  align = "left";
+    else if (style.includes("float:right")) align = "right";
+    return { src: img.getAttribute("src") || "", alt: img.getAttribute("alt") || "", size, align };
+  });
+}
+
+function applyImgEditsToHtml(html, edits) {
+  const div = document.createElement("div");
+  div.innerHTML = html;
+  const imgs = div.querySelectorAll("img");
+  edits.forEach((edit, i) => {
+    if (!imgs[i]) return;
+    imgs[i].setAttribute("alt", edit.alt);
+    let style = `max-width:${edit.size};`;
+    if (edit.align === "center") style += " display:block; margin-left:auto; margin-right:auto;";
+    else if (edit.align === "left")  style += " float:left; margin:0 16px 8px 0;";
+    else if (edit.align === "right") style += " float:right; margin:0 0 8px 16px;";
+    else style += " display:block;";
+    imgs[i].setAttribute("style", style);
+  });
+  return div.innerHTML;
+}
+
+function removeImgFromHtml(html, index) {
+  const div = document.createElement("div");
+  div.innerHTML = html;
+  const imgs = div.querySelectorAll("img");
+  if (imgs[index]) imgs[index].remove();
+  return div.innerHTML;
+}
+// ─────────────────────────────────────────────────────────────
+
 // ─── Post Detail ──────────────────────────────────────────────
 function PostDetail({ post, onApprove, onReject, onPublish, onUpdate, onDelete, onBack }) {
   const [editing, setEditing] = useState(false);
@@ -868,6 +927,11 @@ function PostDetail({ post, onApprove, onReject, onPublish, onUpdate, onDelete, 
   const [imgPicker, setImgPicker] = useState(false);
   const [imgUrl, setImgUrl] = useState("");
   const [imgUploading, setImgUploading] = useState(false);
+  const [imgAlt, setImgAlt] = useState("");
+  const [imgSize, setImgSize] = useState("100%");
+  const [imgAlign, setImgAlign] = useState("center");
+  const [imgManager, setImgManager] = useState(false);
+  const [imgEdits, setImgEdits] = useState([]);
   const [previewMode, setPreviewMode] = useState(false);
   const [findOpen, setFindOpen] = useState(false);
   const [findText, setFindText] = useState("");
@@ -907,10 +971,10 @@ function PostDetail({ post, onApprove, onReject, onPublish, onUpdate, onDelete, 
   function handleInsertImageUrl() {
     if (!imgUrl.trim()) return;
     const tag = post.channel === "wordpress"
-      ? `<img src="${imgUrl.trim()}" alt="" style="max-width:100%;" />`
+      ? buildImgTag(imgUrl.trim(), imgAlt, imgSize, imgAlign)
       : imgUrl.trim();
     insertAtCursor(tag);
-    setImgUrl("");
+    setImgUrl(""); setImgAlt(""); setImgSize("100%"); setImgAlign("center");
     setImgPicker(false);
   }
 
@@ -928,15 +992,35 @@ function PostDetail({ post, onApprove, onReject, onPublish, onUpdate, onDelete, 
       await uploadBytes(fileRef, file);
       const url = await getDownloadURL(fileRef);
       const tag = post.channel === "wordpress"
-        ? `<img src="${url}" alt="${file.name}" style="max-width:100%;" />`
+        ? buildImgTag(url, imgAlt || file.name, imgSize, imgAlign)
         : url;
       insertAtCursor(tag);
+      setImgAlt(""); setImgSize("100%"); setImgAlign("center");
       setImgPicker(false);
     } catch (err) {
       alert("Image upload failed: " + err.message);
     } finally {
       setImgUploading(false);
     }
+  }
+
+  function openImgManager() {
+    setImgEdits(parseImagesFromHtml(editContent));
+    setImgManager(true);
+  }
+
+  function applyImgManager() {
+    setEditContent(applyImgEditsToHtml(editContent, imgEdits));
+    setImgManager(false);
+  }
+
+  function removeImgAt(index) {
+    setEditContent(removeImgFromHtml(editContent, index));
+    setImgEdits((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  function updateImgEdit(index, field, value) {
+    setImgEdits((prev) => prev.map((e, i) => i === index ? { ...e, [field]: value } : e));
   }
 
   const date = post.createdAt
@@ -998,11 +1082,19 @@ function PostDetail({ post, onApprove, onReject, onPublish, onUpdate, onDelete, 
             {/* Edit toolbar */}
             <div className="flex items-center gap-2 mb-2 flex-wrap">
               <button
-                onClick={() => setImgPicker((v) => !v)}
-                className="text-xs border border-gray-300 px-3 py-1.5 rounded-lg hover:bg-gray-50 text-gray-600"
+                onClick={() => { setImgPicker((v) => !v); setImgManager(false); }}
+                className={`text-xs border px-3 py-1.5 rounded-lg transition ${imgPicker ? "border-blue-400 bg-blue-50 text-blue-700" : "border-gray-300 hover:bg-gray-50 text-gray-600"}`}
               >
-                🖼 Image
+                🖼 Insert Image
               </button>
+              {post.channel === "wordpress" && (
+                <button
+                  onClick={() => { setImgManager((v) => !v); if (!imgManager) openImgManager(); setImgPicker(false); }}
+                  className={`text-xs border px-3 py-1.5 rounded-lg transition ${imgManager ? "border-purple-400 bg-purple-50 text-purple-700" : "border-gray-300 hover:bg-gray-50 text-gray-600"}`}
+                >
+                  🗂 Manage Images
+                </button>
+              )}
               {post.channel === "wordpress" && (
                 <button
                   onClick={() => setPreviewMode((v) => !v)}
@@ -1066,44 +1158,160 @@ function PostDetail({ post, onApprove, onReject, onPublish, onUpdate, onDelete, 
             )}
 
             {imgPicker && (
-              <div className="border border-gray-200 rounded-xl p-4 mb-3 bg-gray-50 space-y-3">
-                {/* Upload file */}
+              <div className="border border-blue-200 rounded-xl p-4 mb-3 bg-blue-50 space-y-3">
+
+                {/* Source: upload */}
                 <div>
-                  <p className="text-xs font-semibold text-gray-600 mb-1">Upload from device</p>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    disabled={imgUploading}
-                    onChange={handleInsertImageFile}
-                    className="text-xs text-gray-600 file:mr-2 file:text-xs file:border file:border-gray-300 file:rounded file:px-2 file:py-1 file:bg-white file:text-gray-700 hover:file:bg-gray-50 disabled:opacity-50"
-                  />
-                  {imgUploading && <span className="text-xs text-gray-500 ml-2">Uploading…</span>}
+                  <p className="text-xs font-semibold text-gray-700 mb-1">Upload from device</p>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="file" accept="image/*" disabled={imgUploading}
+                      onChange={handleInsertImageFile}
+                      className="text-xs text-gray-600 file:mr-2 file:text-xs file:border file:border-gray-300 file:rounded file:px-2 file:py-1 file:bg-white hover:file:bg-gray-50 disabled:opacity-50"
+                    />
+                    {imgUploading && <span className="text-xs text-gray-500">Uploading…</span>}
+                  </div>
                 </div>
-                <div className="border-t border-gray-200 pt-3">
-                  <p className="text-xs font-semibold text-gray-600 mb-1">Or paste image URL</p>
+
+                {/* Source: URL */}
+                <div className="border-t border-blue-200 pt-3">
+                  <p className="text-xs font-semibold text-gray-700 mb-1">Or paste image URL</p>
                   <div className="flex gap-2">
                     <input
-                      type="text"
-                      value={imgUrl}
-                      onChange={(e) => setImgUrl(e.target.value)}
+                      type="text" value={imgUrl} onChange={(e) => setImgUrl(e.target.value)}
                       onKeyDown={(e) => e.key === "Enter" && handleInsertImageUrl()}
                       placeholder="https://example.com/image.jpg"
                       className="flex-1 border border-gray-300 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-400"
                     />
-                    <button
-                      onClick={handleInsertImageUrl}
-                      className="bg-blue-600 text-white text-xs px-3 py-1.5 rounded-lg hover:bg-blue-700"
-                    >
-                      Insert
+                  </div>
+                </div>
+
+                {/* Options (WordPress only) */}
+                {post.channel === "wordpress" && (
+                  <div className="border-t border-blue-200 pt-3 space-y-2">
+                    <div>
+                      <p className="text-xs font-semibold text-gray-700 mb-1">Alt text</p>
+                      <input
+                        type="text" value={imgAlt} onChange={(e) => setImgAlt(e.target.value)}
+                        placeholder="Describe the image…"
+                        className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-400"
+                      />
+                    </div>
+                    <div className="flex gap-4 flex-wrap">
+                      <div>
+                        <p className="text-xs font-semibold text-gray-700 mb-1">Size</p>
+                        <div className="flex gap-1">
+                          {["25%","50%","75%","100%"].map((s) => (
+                            <button key={s} onClick={() => setImgSize(s)}
+                              className={`text-xs px-2 py-1 rounded border transition ${imgSize === s ? "bg-blue-600 text-white border-blue-600" : "border-gray-300 text-gray-600 hover:bg-gray-100"}`}>
+                              {s}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold text-gray-700 mb-1">Alignment</p>
+                        <div className="flex gap-1">
+                          {[["left","◀ Left"],["center","■ Center"],["right","▶ Right"],["none","— None"]].map(([val,label]) => (
+                            <button key={val} onClick={() => setImgAlign(val)}
+                              className={`text-xs px-2 py-1 rounded border transition ${imgAlign === val ? "bg-blue-600 text-white border-blue-600" : "border-gray-300 text-gray-600 hover:bg-gray-100"}`}>
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Actions */}
+                <div className="flex gap-2 border-t border-blue-200 pt-3">
+                  <button onClick={handleInsertImageUrl} disabled={!imgUrl.trim()}
+                    className="bg-blue-600 text-white text-xs px-4 py-1.5 rounded-lg hover:bg-blue-700 disabled:opacity-40">
+                    Insert from URL
+                  </button>
+                  <button onClick={() => { setImgPicker(false); setImgUrl(""); setImgAlt(""); setImgSize("100%"); setImgAlign("center"); }}
+                    className="text-xs text-gray-500 px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-100">
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Image Manager */}
+            {imgManager && post.channel === "wordpress" && (
+              <div className="border border-purple-200 rounded-xl p-4 mb-3 bg-purple-50 space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-semibold text-purple-800">Images in this post</p>
+                  <div className="flex gap-2">
+                    <button onClick={applyImgManager}
+                      className="bg-purple-600 text-white text-xs px-3 py-1.5 rounded-lg hover:bg-purple-700">
+                      Apply Changes
                     </button>
-                    <button
-                      onClick={() => { setImgPicker(false); setImgUrl(""); }}
-                      className="text-xs text-gray-500 px-2 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-100"
-                    >
+                    <button onClick={() => setImgManager(false)}
+                      className="text-xs text-gray-500 px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-100">
                       Cancel
                     </button>
                   </div>
                 </div>
+
+                {imgEdits.length === 0 ? (
+                  <p className="text-xs text-gray-500 text-center py-4">No images found in this post.</p>
+                ) : (
+                  <div className="space-y-3">
+                    {imgEdits.map((img, i) => (
+                      <div key={i} className="bg-white border border-purple-100 rounded-xl p-3 flex gap-3">
+                        {/* Thumbnail */}
+                        <div className="flex-shrink-0 w-20 h-20 rounded-lg overflow-hidden bg-gray-100 border border-gray-200">
+                          <img src={img.src} alt={img.alt} className="w-full h-full object-cover" />
+                        </div>
+
+                        {/* Controls */}
+                        <div className="flex-1 space-y-2 min-w-0">
+                          <div>
+                            <p className="text-xs text-gray-500 mb-0.5">Alt text</p>
+                            <input
+                              type="text" value={img.alt}
+                              onChange={(e) => updateImgEdit(i, "alt", e.target.value)}
+                              placeholder="Describe the image…"
+                              className="w-full border border-gray-300 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-purple-300"
+                            />
+                          </div>
+                          <div className="flex gap-3 flex-wrap">
+                            <div>
+                              <p className="text-xs text-gray-500 mb-0.5">Size</p>
+                              <div className="flex gap-1">
+                                {["25%","50%","75%","100%"].map((s) => (
+                                  <button key={s} onClick={() => updateImgEdit(i, "size", s)}
+                                    className={`text-xs px-2 py-0.5 rounded border transition ${img.size === s ? "bg-purple-600 text-white border-purple-600" : "border-gray-300 text-gray-600 hover:bg-gray-100"}`}>
+                                    {s}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                            <div>
+                              <p className="text-xs text-gray-500 mb-0.5">Alignment</p>
+                              <div className="flex gap-1">
+                                {[["left","◀"],["center","■"],["right","▶"],["none","—"]].map(([val,label]) => (
+                                  <button key={val} onClick={() => updateImgEdit(i, "align", val)}
+                                    className={`text-xs px-2 py-0.5 rounded border transition ${img.align === val ? "bg-purple-600 text-white border-purple-600" : "border-gray-300 text-gray-600 hover:bg-gray-100"}`}>
+                                    {label}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Remove */}
+                        <button onClick={() => removeImgAt(i)}
+                          className="flex-shrink-0 text-gray-300 hover:text-red-500 text-lg leading-none self-start">
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
