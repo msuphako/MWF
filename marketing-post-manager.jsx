@@ -1408,6 +1408,12 @@ function PostDetail({ post, onApprove, onReject, onPublish, onUpdate, onDelete, 
             Copied for {post.channel === "linkedin" ? "LinkedIn" : "WordPress"}!
           </p>
           <p className="text-sm text-green-600 mt-1">Content was copied — paste it manually into the platform.</p>
+          <button
+            onClick={() => onPublish(post)}
+            className="mt-4 bg-green-600 text-white text-sm px-5 py-2 rounded-lg hover:bg-green-700 font-medium"
+          >
+            📋 Copy Again
+          </button>
         </div>
       )}
     </div>
