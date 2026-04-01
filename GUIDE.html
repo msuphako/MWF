@@ -1,0 +1,974 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>How We Built PostFlow — A Complete Guide</title>
+  <style>
+    :root {
+      --blue: #2563eb;
+      --indigo: #4f46e5;
+      --green: #16a34a;
+      --yellow: #ca8a04;
+      --red: #dc2626;
+      --gray-50: #f9fafb;
+      --gray-100: #f3f4f6;
+      --gray-200: #e5e7eb;
+      --gray-400: #9ca3af;
+      --gray-600: #4b5563;
+      --gray-700: #374151;
+      --gray-900: #111827;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 16px;
+      line-height: 1.7;
+      color: var(--gray-700);
+      background: #fff;
+    }
+
+    /* ── Layout ── */
+    .sidebar {
+      position: fixed;
+      top: 0; left: 0;
+      width: 260px;
+      height: 100vh;
+      overflow-y: auto;
+      background: var(--gray-50);
+      border-right: 1px solid var(--gray-200);
+      padding: 24px 16px;
+    }
+
+    .content {
+      margin-left: 260px;
+      max-width: 820px;
+      padding: 48px 48px 96px;
+    }
+
+    @media (max-width: 768px) {
+      .sidebar { display: none; }
+      .content { margin-left: 0; padding: 24px 20px 64px; }
+    }
+
+    /* ── Sidebar ── */
+    .sidebar-title {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      color: var(--gray-400);
+      margin-bottom: 12px;
+    }
+
+    .sidebar nav a {
+      display: block;
+      font-size: 13px;
+      color: var(--gray-600);
+      text-decoration: none;
+      padding: 4px 8px;
+      border-radius: 6px;
+      margin-bottom: 2px;
+      transition: background .15s, color .15s;
+    }
+
+    .sidebar nav a:hover,
+    .sidebar nav a.active {
+      background: var(--gray-200);
+      color: var(--gray-900);
+    }
+
+    .sidebar nav a.sub {
+      padding-left: 20px;
+      font-size: 12px;
+      color: var(--gray-400);
+    }
+
+    /* ── Typography ── */
+    h1 {
+      font-size: 2rem;
+      font-weight: 800;
+      color: var(--gray-900);
+      line-height: 1.2;
+      margin-bottom: 12px;
+    }
+
+    .subtitle {
+      font-size: 1.05rem;
+      color: var(--gray-600);
+      margin-bottom: 40px;
+      padding-bottom: 32px;
+      border-bottom: 2px solid var(--gray-200);
+    }
+
+    h2 {
+      font-size: 1.4rem;
+      font-weight: 700;
+      color: var(--gray-900);
+      margin: 48px 0 12px;
+      padding-top: 16px;
+      scroll-margin-top: 24px;
+    }
+
+    h3 {
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: var(--gray-900);
+      margin: 28px 0 8px;
+      scroll-margin-top: 24px;
+    }
+
+    p { margin-bottom: 14px; }
+
+    ul, ol {
+      margin: 0 0 14px 24px;
+    }
+
+    li { margin-bottom: 6px; }
+
+    strong { color: var(--gray-900); }
+
+    a { color: var(--blue); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    hr {
+      border: none;
+      border-top: 1px solid var(--gray-200);
+      margin: 40px 0;
+    }
+
+    /* ── Code ── */
+    code {
+      font-family: "Cascadia Code", "Fira Code", "Consolas", monospace;
+      font-size: .875em;
+      background: var(--gray-100);
+      border: 1px solid var(--gray-200);
+      padding: 1px 5px;
+      border-radius: 4px;
+      color: #be185d;
+    }
+
+    pre {
+      background: #1e1e2e;
+      color: #cdd6f4;
+      border-radius: 10px;
+      padding: 20px 22px;
+      overflow-x: auto;
+      margin: 16px 0 20px;
+      font-size: .85rem;
+      line-height: 1.6;
+    }
+
+    pre code {
+      background: none;
+      border: none;
+      padding: 0;
+      color: inherit;
+      font-size: inherit;
+    }
+
+    /* syntax tint helpers */
+    .kw  { color: #cba6f7; } /* keywords */
+    .str { color: #a6e3a1; } /* strings */
+    .cm  { color: #6c7086; } /* comments */
+    .fn  { color: #89b4fa; } /* function names */
+    .num { color: #fab387; } /* numbers */
+
+    /* ── Callout boxes ── */
+    .callout {
+      border-left: 4px solid var(--blue);
+      background: #eff6ff;
+      border-radius: 0 8px 8px 0;
+      padding: 14px 18px;
+      margin: 16px 0 20px;
+      font-size: .95rem;
+    }
+
+    .callout.warn {
+      border-color: var(--yellow);
+      background: #fefce8;
+    }
+
+    .callout.danger {
+      border-color: var(--red);
+      background: #fef2f2;
+    }
+
+    .callout.success {
+      border-color: var(--green);
+      background: #f0fdf4;
+    }
+
+    .callout-title {
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    /* ── Tables ── */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0 20px;
+      font-size: .9rem;
+    }
+
+    th {
+      background: var(--gray-100);
+      color: var(--gray-900);
+      font-weight: 600;
+      text-align: left;
+      padding: 10px 14px;
+      border: 1px solid var(--gray-200);
+    }
+
+    td {
+      padding: 9px 14px;
+      border: 1px solid var(--gray-200);
+      vertical-align: top;
+    }
+
+    tr:nth-child(even) td { background: var(--gray-50); }
+
+    /* ── Step badges ── */
+    .steps { list-style: none; margin: 0 0 20px; padding: 0; }
+
+    .steps li {
+      display: flex;
+      gap: 14px;
+      margin-bottom: 14px;
+      align-items: flex-start;
+    }
+
+    .step-num {
+      flex-shrink: 0;
+      width: 28px; height: 28px;
+      background: var(--blue);
+      color: #fff;
+      font-size: .8rem;
+      font-weight: 700;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      margin-top: 2px;
+    }
+
+    /* ── Flow diagram ── */
+    .flow {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 16px 0 20px;
+      font-size: .9rem;
+    }
+
+    .flow-box {
+      background: var(--gray-100);
+      border: 1px solid var(--gray-200);
+      border-radius: 8px;
+      padding: 6px 14px;
+      font-weight: 600;
+      color: var(--gray-900);
+    }
+
+    .flow-box.blue   { background: #dbeafe; border-color: #93c5fd; color: #1d4ed8; }
+    .flow-box.yellow { background: #fef9c3; border-color: #fde047; color: #854d0e; }
+    .flow-box.green  { background: #dcfce7; border-color: #86efac; color: #166534; }
+    .flow-box.red    { background: #fee2e2; border-color: #fca5a5; color: #991b1b; }
+
+    .flow-arrow { color: var(--gray-400); font-size: 1.1rem; }
+
+    /* ── Part headers ── */
+    .part-label {
+      display: inline-block;
+      font-size: .72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      background: var(--indigo);
+      color: #fff;
+      border-radius: 4px;
+      padding: 2px 8px;
+      margin-bottom: 6px;
+    }
+
+    /* ── Feature cards ── */
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 14px;
+      margin: 16px 0 20px;
+    }
+
+    .feature-card {
+      border: 1px solid var(--gray-200);
+      border-radius: 10px;
+      padding: 16px;
+      background: var(--gray-50);
+    }
+
+    .feature-card .icon { font-size: 1.3rem; margin-bottom: 6px; }
+    .feature-card .title { font-weight: 600; color: var(--gray-900); margin-bottom: 4px; font-size: .95rem; }
+    .feature-card .desc { font-size: .85rem; color: var(--gray-600); line-height: 1.5; }
+
+    /* ── Summary table at bottom ── */
+    .summary-table td:first-child { font-weight: 600; white-space: nowrap; }
+
+    /* ── Back to top ── */
+    .back-top {
+      display: inline-block;
+      margin-top: 32px;
+      font-size: .85rem;
+      color: var(--gray-400);
+    }
+
+    .back-top:hover { color: var(--blue); }
+  </style>
+</head>
+<body>
+
+<!-- ════════════════════ SIDEBAR ════════════════════ -->
+<aside class="sidebar">
+  <div class="sidebar-title">Contents</div>
+  <nav>
+    <a href="#intro">What is this app?</a>
+    <a href="#requirements">What you need</a>
+    <a href="#files">Project files</a>
+    <a href="#part1">Part 1 — Starting point</a>
+    <a href="#part2">Part 2 — Project tools</a>
+    <a class="sub" href="#vite">What is Vite?</a>
+    <a class="sub" href="#react">What is React?</a>
+    <a class="sub" href="#tailwind">What is Tailwind?</a>
+    <a class="sub" href="#steps">Setup steps 1–8</a>
+    <a href="#part3">Part 3 — Secret keys (.env)</a>
+    <a href="#part4">Part 4 — Firebase imports</a>
+    <a href="#part5">Part 5 — Firebase</a>
+    <a href="#part6">Part 6 — CORS &amp; proxy</a>
+    <a href="#part7">Part 7 — AI generation</a>
+    <a href="#part8">Part 8 — Clipboard publish</a>
+    <a href="#part9">Part 9 — Post workflow</a>
+    <a href="#part10">Part 10 — Editor features</a>
+    <a href="#part11">Part 11 — start.bat</a>
+    <a href="#running">Running the app</a>
+    <a href="#env">Filling in .env</a>
+    <a href="#reminders">Things to remember</a>
+    <a href="#summary">Summary</a>
+  </nav>
+</aside>
+
+<!-- ════════════════════ CONTENT ════════════════════ -->
+<main class="content">
+
+  <h1>How We Built PostFlow</h1>
+  <p class="subtitle">A complete guide for anyone who wants to understand this project from the very beginning — written in plain language, no experience needed.</p>
+
+  <!-- WHAT IS THIS APP -->
+  <h2 id="intro">What is this app?</h2>
+  <p>PostFlow is a website that helps you write marketing posts for <strong>LinkedIn</strong> and <strong>WordPress</strong>.</p>
+  <p>You type a topic, click a button, and an AI writes the post for you. Then you can edit it, approve it, copy it, and paste it into LinkedIn or WordPress yourself.</p>
+  <p>Simple idea — but we needed to build a lot of pieces to make it work.</p>
+
+  <hr>
+
+  <!-- REQUIREMENTS -->
+  <h2 id="requirements">What you need before starting</h2>
+
+  <h3>1. Node.js</h3>
+  <p>Node.js lets your computer run JavaScript outside of a browser. Think of it like an engine that powers your project.</p>
+  <ul>
+    <li>Download from <a href="https://nodejs.org" target="_blank">nodejs.org</a></li>
+    <li>Pick the version that says <strong>LTS</strong> — that means "stable and reliable"</li>
+    <li>Install it like a normal program</li>
+  </ul>
+  <p>To check it worked, open <strong>Command Prompt</strong> (search for <code>cmd</code> in the Start menu) and type:</p>
+  <pre><code>node --version</code></pre>
+  <p>If you see a number like <code>v22.0.0</code>, you're good.</p>
+
+  <div class="callout warn">
+    <div class="callout-title">⚠ Use Command Prompt, not PowerShell</div>
+    PowerShell blocks npm scripts on Windows. Always use <strong>cmd</strong>.
+  </div>
+
+  <h3>2. A code editor</h3>
+  <p>This is where you write and read code. We recommend <strong>Visual Studio Code</strong> — it's free.</p>
+  <ul>
+    <li>Download from <a href="https://code.visualstudio.com" target="_blank">code.visualstudio.com</a></li>
+  </ul>
+
+  <h3>3. A Google account</h3>
+  <p>You need one to set up Firebase (the database). You probably already have one.</p>
+
+  <hr>
+
+  <!-- FILES -->
+  <h2 id="files">Understanding the project files</h2>
+  <p>Before building anything, here is what each file in the project does:</p>
+
+  <table>
+    <thead><tr><th>File</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>marketing-post-manager.jsx</code></td><td>The entire app. All buttons, screens, and logic live here.</td></tr>
+      <tr><td><code>main.jsx</code></td><td>Starts the app (like pressing the power button).</td></tr>
+      <tr><td><code>index.html</code></td><td>The blank webpage the app loads into.</td></tr>
+      <tr><td><code>index.css</code></td><td>Activates Tailwind CSS styling.</td></tr>
+      <tr><td><code>package.json</code></td><td>The shopping list of tools the project needs.</td></tr>
+      <tr><td><code>vite.config.js</code></td><td>Settings for the tool that runs and builds the app.</td></tr>
+      <tr><td><code>tailwind.config.js</code></td><td>Settings for the styling tool.</td></tr>
+      <tr><td><code>postcss.config.js</code></td><td>Helps Tailwind CSS work with Vite.</td></tr>
+      <tr><td><code>.env</code></td><td>Your secret keys. <strong>Never share this file.</strong></td></tr>
+      <tr><td><code>.env.example</code></td><td>A blank template showing which keys are needed.</td></tr>
+      <tr><td><code>.gitignore</code></td><td>Tells Git to ignore <code>.env</code> and <code>node_modules</code>.</td></tr>
+      <tr><td><code>start.bat</code></td><td>A double-click shortcut to start the app.</td></tr>
+      <tr><td><code>SETUP.md</code></td><td>Short setup instructions.</td></tr>
+      <tr><td><code>GUIDE.md / GUIDE.html</code></td><td>This guide.</td></tr>
+    </tbody>
+  </table>
+
+  <hr>
+
+  <!-- PART 1 -->
+  <div class="part-label">Part 1</div>
+  <h2 id="part1">The starting point</h2>
+
+  <p>We started with just <strong>one file</strong>: <code>marketing-post-manager.jsx</code>.</p>
+  <p>This file already had the full app written in it — buttons, screens, logic for talking to AI and Firebase. But it had two problems:</p>
+
+  <div class="callout danger">
+    <div class="callout-title">Problem 1 — Firebase loaded from a URL</div>
+    <pre style="margin:8px 0 0"><code>import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";</code></pre>
+    <p style="margin-top:8px;margin-bottom:0">This works in a plain browser, but not in a proper development setup with build tools.</p>
+  </div>
+
+  <div class="callout danger">
+    <div class="callout-title">Problem 2 — Secret keys written in the file</div>
+    <pre style="margin:8px 0 0"><code>const CONFIG = {
+  CLAUDE_API_KEY: "YOUR_CLAUDE_API_KEY",
+  ...
+}</code></pre>
+    <p style="margin-top:8px;margin-bottom:0">If you share the file, you share your keys. Anyone can use them and charge costs to your account.</p>
+  </div>
+
+  <p>Our job was to fix both problems and turn this single file into a proper project.</p>
+
+  <hr>
+
+  <!-- PART 2 -->
+  <div class="part-label">Part 2</div>
+  <h2 id="part2">Setting up the project tools</h2>
+
+  <h3 id="vite">What is Vite?</h3>
+  <p>Vite is a tool that:</p>
+  <ul>
+    <li>Lets you run your app locally at <code>http://localhost:5173</code></li>
+    <li>Automatically refreshes the browser when you save a file</li>
+    <li>Builds your app into a finished website when you're ready to publish</li>
+  </ul>
+
+  <h3 id="react">What is React?</h3>
+  <p>React is the library that makes the app's buttons and screens work. The <code>.jsx</code> file extension means the file uses React.</p>
+
+  <h3 id="tailwind">What is Tailwind CSS?</h3>
+  <p>Tailwind is a styling tool. Instead of writing a separate CSS file, you add short words like <code>text-blue-600</code> or <code>rounded-xl</code> directly onto elements, and it figures out the styling.</p>
+
+  <h3 id="steps">Setup steps</h3>
+
+  <h3>Step 1 — Create <code>package.json</code></h3>
+  <p>This file is the shopping list. It tells npm which tools to download.</p>
+  <pre><code>{
+  "name": "marketing-post-manager",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "firebase": "^10.12.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/typography": "^0.5.15",
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.14",
+    "vite": "^5.4.10"
+  }
+}</code></pre>
+  <ul>
+    <li><code>dependencies</code> — tools needed when the app is running</li>
+    <li><code>devDependencies</code> — tools only needed while building</li>
+    <li><code>scripts</code> — shortcuts. <code>npm run dev</code> runs the <code>"dev": "vite"</code> line.</li>
+  </ul>
+
+  <h3>Step 2 — Create <code>vite.config.js</code></h3>
+  <p>Tells Vite to use the React plugin so it understands <code>.jsx</code> files.</p>
+  <pre><code>import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+
+export default defineConfig({ plugins: [react()] });</code></pre>
+
+  <h3>Step 3 — Create <code>tailwind.config.js</code></h3>
+  <p>Tells Tailwind which files to scan for styling words. The <code>@tailwindcss/typography</code> plugin makes HTML blog posts look nice.</p>
+  <pre><code>export default {
+  content: ["./index.html", "./*.jsx"],
+  theme: { extend: {} },
+  plugins: [require("@tailwindcss/typography")],
+};</code></pre>
+
+  <h3>Step 4 — Create <code>postcss.config.js</code></h3>
+  <p>PostCSS is a helper that processes CSS. Tailwind needs it to work.</p>
+  <pre><code>export default { plugins: { tailwindcss: {}, autoprefixer: {} } };</code></pre>
+
+  <h3>Step 5 — Create <code>index.html</code></h3>
+  <p>The blank webpage. The <code>&lt;div id="root"&gt;</code> is an empty box — React fills this box with all the buttons and screens.</p>
+  <pre><code>&lt;!doctype html&gt;
+&lt;html lang="en"&gt;
+  &lt;head&gt;
+    &lt;meta charset="UTF-8" /&gt;
+    &lt;meta name="viewport" content="width=device-width, initial-scale=1.0" /&gt;
+    &lt;title&gt;PostFlow — Marketing Post Manager&lt;/title&gt;
+  &lt;/head&gt;
+  &lt;body&gt;
+    &lt;div id="root"&gt;&lt;/div&gt;
+    &lt;script type="module" src="/main.jsx"&gt;&lt;/script&gt;
+  &lt;/body&gt;
+&lt;/html&gt;</code></pre>
+
+  <h3>Step 6 — Create <code>index.css</code></h3>
+  <p>Three lines that activate Tailwind CSS.</p>
+  <pre><code>@tailwind base;
+@tailwind components;
+@tailwind utilities;</code></pre>
+
+  <h3>Step 7 — Create <code>main.jsx</code></h3>
+  <p>The power button. It finds the empty <code>#root</code> box and puts the app inside it.</p>
+  <pre><code>import { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import "./index.css";
+import App from "./marketing-post-manager.jsx";
+
+createRoot(document.getElementById("root")).render(
+  &lt;StrictMode&gt;
+    &lt;App /&gt;
+  &lt;/StrictMode&gt;
+);</code></pre>
+
+  <h3>Step 8 — Install everything</h3>
+  <p>Open Command Prompt in the project folder and run:</p>
+  <pre><code>npm install</code></pre>
+  <p>This reads <code>package.json</code> and downloads all tools into a <code>node_modules</code> folder. Takes about a minute.</p>
+
+  <hr>
+
+  <!-- PART 3 -->
+  <div class="part-label">Part 3</div>
+  <h2 id="part3">Moving secret keys to <code>.env</code></h2>
+
+  <h3>Why does this matter?</h3>
+  <p>If your API key is in the code file and you share it, whoever receives it can use it to generate AI content — and charge it to your account.</p>
+  <p>A <code>.env</code> file keeps secrets separate. The <code>.gitignore</code> file makes sure Git never uploads it. So your keys stay safe.</p>
+
+  <h3>How it works</h3>
+  <p>Vite reads the <code>.env</code> file and makes values available in your code using <code>import.meta.env.VITE_...</code></p>
+
+  <table>
+    <thead><tr><th>Before (dangerous)</th><th>After (safe)</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>CLAUDE_API_KEY: "sk-ant-api03-..."</code></td>
+        <td><code>CLAUDE_API_KEY: import.meta.env.VITE_CLAUDE_API_KEY</code></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>The <code>.env</code> file (which is <strong>never shared</strong>) contains:</p>
+  <pre><code>VITE_CLAUDE_API_KEY=sk-ant-api03-...</code></pre>
+
+  <div class="callout">
+    <div class="callout-title">Important rule</div>
+    Every variable you want to use in your app must start with <code>VITE_</code>. Variables without that prefix stay hidden — Vite won't expose them to the browser.
+  </div>
+
+  <h3>The <code>.env.example</code> file</h3>
+  <p>This is a blank copy of <code>.env</code> with no real values. You commit this to Git so other people know which variables they need to fill in.</p>
+
+  <hr>
+
+  <!-- PART 4 -->
+  <div class="part-label">Part 4</div>
+  <h2 id="part4">Fixing the Firebase imports</h2>
+
+  <table>
+    <thead><tr><th>Before</th><th>After</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>import ... from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js"</code></td>
+        <td><code>import ... from "firebase/app"</code></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>Since we now have <code>node_modules</code>, we use the proper npm package. It's shorter, faster, and works with Vite.</p>
+
+  <hr>
+
+  <!-- PART 5 -->
+  <div class="part-label">Part 5</div>
+  <h2 id="part5">What is Firebase?</h2>
+
+  <p>Firebase is a service made by Google. It gives you a database without having to build one yourself. We use two parts:</p>
+
+  <div class="feature-grid">
+    <div class="feature-card">
+      <div class="icon">🗄️</div>
+      <div class="title">Firestore</div>
+      <div class="desc">Stores your posts. Think of it like a shared Google Sheet that your app can read and write to.</div>
+    </div>
+    <div class="feature-card">
+      <div class="icon">🖼️</div>
+      <div class="title">Firebase Storage</div>
+      <div class="desc">Stores image files. When you upload an image, it goes here and the app gets back a URL to use in the post.</div>
+    </div>
+  </div>
+
+  <h3>How to set up Firebase</h3>
+  <ol class="steps">
+    <li><span class="step-num">1</span><span>Go to <a href="https://firebase.google.com" target="_blank">firebase.google.com</a> and sign in with your Google account.</span></li>
+    <li><span class="step-num">2</span><span>Click <strong>Add project</strong> and give it a name.</span></li>
+    <li><span class="step-num">3</span><span>Click the <strong>Web icon</strong> (<code>&lt;/&gt;</code>), give it a nickname, click <strong>Register app</strong>.</span></li>
+    <li><span class="step-num">4</span><span>Copy each value from the <code>firebaseConfig</code> block into your <code>.env</code> file.</span></li>
+    <li><span class="step-num">5</span><span>In the left menu: <strong>Build → Firestore Database → Create database</strong> → Test mode → Enable.</span></li>
+    <li><span class="step-num">6</span><span>In the left menu: <strong>Build → Storage → Get started</strong> → Test mode → Enable.</span></li>
+  </ol>
+
+  <div class="callout warn">
+    <div class="callout-title">⚠ Test mode expires after 30 days</div>
+    Go to Firebase Console → Firestore → Rules and extend the expiry date, or set proper security rules.
+  </div>
+
+  <hr>
+
+  <!-- PART 6 -->
+  <div class="part-label">Part 6</div>
+  <h2 id="part6">Fixing the AI API — the CORS problem</h2>
+
+  <h3>What is CORS?</h3>
+  <p>CORS stands for <strong>Cross-Origin Resource Sharing</strong>. It's a security rule built into every browser.</p>
+  <p>When your app (at <code>localhost:5173</code>) tries to talk to the Anthropic API (at <code>api.anthropic.com</code>), the browser says: <em>"You're from a different address — I won't allow this."</em></p>
+
+  <h3>The solution: a proxy</h3>
+  <p>A proxy is a middleman. Instead of the browser calling Anthropic directly:</p>
+
+  <div class="flow">
+    <div class="flow-box">Browser</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-box red">Anthropic API ✗</div>
+  </div>
+
+  <p>We tell the browser to call Vite's own server, which forwards the request to Anthropic:</p>
+
+  <div class="flow">
+    <div class="flow-box">Browser</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-box blue">Vite proxy</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-box green">Anthropic API ✓</div>
+  </div>
+
+  <p>Because Vite's proxy is server-side (not in the browser), CORS doesn't apply. We also remove the <code>origin</code> and <code>referer</code> headers so the API doesn't detect the browser origin.</p>
+
+  <pre><code>server: {
+  proxy: {
+    "/api/anthropic": {
+      target: "https://api.anthropic.com",
+      changeOrigin: true,
+      rewrite: (path) =&gt; path.replace(/^\/api\/anthropic/, ""),
+      configure: (proxy) =&gt; {
+        proxy.on("proxyReq", (proxyReq) =&gt; {
+          proxyReq.removeHeader("origin");
+          proxyReq.removeHeader("referer");
+        });
+      },
+    },
+    "/api/openai": { /* same pattern */ }
+  }
+}</code></pre>
+
+  <p>In the app code, the URL changes from <code>https://api.anthropic.com/v1/messages</code> to <code>/api/anthropic/v1/messages</code>.</p>
+
+  <hr>
+
+  <!-- PART 7 -->
+  <div class="part-label">Part 7</div>
+  <h2 id="part7">The AI generation system</h2>
+
+  <h3>Two providers</h3>
+  <table>
+    <thead><tr><th>Provider</th><th>Company</th><th>Model</th></tr></thead>
+    <tbody>
+      <tr><td>Claude</td><td>Anthropic</td><td>claude-sonnet-4-6</td></tr>
+      <tr><td>GPT-4o</td><td>OpenAI</td><td>gpt-4o</td></tr>
+    </tbody>
+  </table>
+  <p>Both work the same way: you send them a message, they send back text.</p>
+
+  <h3>What is a system prompt?</h3>
+  <p>A system prompt is instructions you give the AI <em>before</em> the user's message. It sets the personality and rules.</p>
+  <ul>
+    <li><strong>LinkedIn:</strong> "You are an expert LinkedIn content creator. Write engaging professional posts…"</li>
+    <li><strong>WordPress:</strong> "You are an expert blog writer. Write a full blog post in HTML…"</li>
+  </ul>
+
+  <h3>What is tone?</h3>
+  <p>Tone changes how the writing sounds. The tone instruction is added to the system prompt before sending.</p>
+  <table>
+    <thead><tr><th>Tone</th><th>What it means</th></tr></thead>
+    <tbody>
+      <tr><td>Professional</td><td>Formal and authoritative</td></tr>
+      <tr><td>Casual</td><td>Friendly and relaxed, like talking to a friend</td></tr>
+      <tr><td>Inspirational</td><td>Motivating and uplifting</td></tr>
+      <tr><td>Bold</td><td>Short, punchy, direct — strong statements</td></tr>
+    </tbody>
+  </table>
+
+  <hr>
+
+  <!-- PART 8 -->
+  <div class="part-label">Part 8</div>
+  <h2 id="part8">The "publish" decision</h2>
+
+  <p>Originally the app had real LinkedIn and WordPress publishing — it would automatically post for you.</p>
+  <p>We turned this off and replaced it with <strong>clipboard copy</strong> instead.</p>
+
+  <div class="callout success">
+    <div class="callout-title">Why clipboard?</div>
+    Setting up LinkedIn and WordPress API connections requires many steps and credentials. For now, it's simpler to click "📋 Copy", open LinkedIn, and paste manually. The full API publishing can be re-added later.
+  </div>
+
+  <hr>
+
+  <!-- PART 9 -->
+  <div class="part-label">Part 9</div>
+  <h2 id="part9">How posts flow through the app</h2>
+
+  <div class="flow" style="flex-wrap:wrap;gap:10px;margin-bottom:24px">
+    <div class="flow-box blue">Create</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-box yellow">Pending</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-box blue">Approved</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-box green">Published (Copied)</div>
+  </div>
+  <div class="flow" style="margin-bottom:24px">
+    <div class="flow-box yellow">Pending</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-box red">Rejected</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-box blue">Re-approved</div>
+  </div>
+
+  <table>
+    <thead><tr><th>Status</th><th>What it means</th></tr></thead>
+    <tbody>
+      <tr><td>Pending</td><td>Submitted, waiting for review</td></tr>
+      <tr><td>Approved</td><td>Reviewed and ready to copy/publish</td></tr>
+      <tr><td>Published</td><td>Content has been copied to clipboard</td></tr>
+      <tr><td>Rejected</td><td>Needs revision — can be re-approved</td></tr>
+    </tbody>
+  </table>
+
+  <hr>
+
+  <!-- PART 10 -->
+  <div class="part-label">Part 10</div>
+  <h2 id="part10">Features added to the editor</h2>
+
+  <div class="feature-grid">
+    <div class="feature-card">
+      <div class="icon">🖼️</div>
+      <div class="title">Image Insertion</div>
+      <div class="desc">Upload from device (goes to Firebase Storage) or paste a URL. For WordPress, inserts as an &lt;img&gt; tag.</div>
+    </div>
+    <div class="feature-card">
+      <div class="icon">🎨</div>
+      <div class="title">Tone Selector</div>
+      <div class="desc">Pick Professional, Casual, Inspirational, or Bold before generating. Changes the AI's writing style.</div>
+    </div>
+    <div class="feature-card">
+      <div class="icon">✨</div>
+      <div class="title">3 Variations</div>
+      <div class="desc">Generate 3 versions in parallel and pick the one you like best.</div>
+    </div>
+    <div class="feature-card">
+      <div class="icon">↻</div>
+      <div class="title">Regenerate</div>
+      <div class="desc">After seeing the first result, click again to get a new version with the same prompt.</div>
+    </div>
+    <div class="feature-card">
+      <div class="icon">📏</div>
+      <div class="title">Character Counter</div>
+      <div class="desc">LinkedIn: shows X / 3000 (yellow near limit, red over). WordPress: shows word count.</div>
+    </div>
+    <div class="feature-card">
+      <div class="icon">↺</div>
+      <div class="title">Revert</div>
+      <div class="desc">Go back to the original AI-generated content if you've edited it and want to start over.</div>
+    </div>
+    <div class="feature-card">
+      <div class="icon">👁️</div>
+      <div class="title">HTML Preview</div>
+      <div class="desc">Toggle between raw HTML code and the rendered preview while editing WordPress posts.</div>
+    </div>
+    <div class="feature-card">
+      <div class="icon">🔍</div>
+      <div class="title">Find &amp; Replace</div>
+      <div class="desc">Search for a word and replace all instances. Useful for fixing brand names or repeated typos.</div>
+    </div>
+  </div>
+
+  <hr>
+
+  <!-- PART 11 -->
+  <div class="part-label">Part 11</div>
+  <h2 id="part11">The <code>start.bat</code> shortcut</h2>
+
+  <p>Normal users shouldn't have to open Command Prompt every time. So we made a <code>.bat</code> file — double-clicking it starts everything automatically.</p>
+
+  <pre><code>@echo off
+cd /d "%~dp0"
+echo Starting PostFlow...
+start "" cmd /k "npm run dev"
+timeout /t 3 /nobreak &gt;nul
+start "" "http://localhost:5173"</code></pre>
+
+  <table>
+    <thead><tr><th>Line</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>@echo off</code></td><td>Stops the script printing every command it runs</td></tr>
+      <tr><td><code>cd /d "%~dp0"</code></td><td>Goes to the folder where the .bat file lives</td></tr>
+      <tr><td><code>echo Starting PostFlow...</code></td><td>Shows a message so you know it's working</td></tr>
+      <tr><td><code>start "" cmd /k "npm run dev"</code></td><td>Opens a new window and starts the server</td></tr>
+      <tr><td><code>timeout /t 3 /nobreak &gt;nul</code></td><td>Waits 3 seconds for the server to start</td></tr>
+      <tr><td><code>start "" "http://localhost:5173"</code></td><td>Opens the app in the browser</td></tr>
+    </tbody>
+  </table>
+
+  <hr>
+
+  <!-- RUNNING -->
+  <h2 id="running">Running the app</h2>
+
+  <h3>First time only</h3>
+  <pre><code>npm install</code></pre>
+
+  <h3>Every time after</h3>
+  <p>Double-click <code>start.bat</code> — or in Command Prompt:</p>
+  <pre><code>npm run dev</code></pre>
+  <p>Then open: <strong>http://localhost:5173</strong></p>
+
+  <h3>To stop</h3>
+  <p>Close the Command Prompt window that has <code>npm run dev</code> running in it.</p>
+
+  <hr>
+
+  <!-- ENV -->
+  <h2 id="env">Filling in your <code>.env</code> file</h2>
+
+  <p>Open <code>.env</code> in any text editor (Notepad works fine) and fill in your values:</p>
+
+  <table>
+    <thead><tr><th>Variable</th><th>Where to get it</th></tr></thead>
+    <tbody>
+      <tr><td><code>VITE_FIREBASE_API_KEY</code></td><td rowspan="7">Firebase Console → Project Settings → Your Apps</td></tr>
+      <tr><td><code>VITE_FIREBASE_AUTH_DOMAIN</code></td></tr>
+      <tr><td><code>VITE_FIREBASE_PROJECT_ID</code></td></tr>
+      <tr><td><code>VITE_FIREBASE_STORAGE_BUCKET</code></td></tr>
+      <tr><td><code>VITE_FIREBASE_MESSAGING_SENDER_ID</code></td></tr>
+      <tr><td><code>VITE_FIREBASE_APP_ID</code></td></tr>
+      <tr><td><code>VITE_FIREBASE_MEASUREMENT_ID</code></td></tr>
+      <tr><td><code>VITE_CLAUDE_API_KEY</code></td><td><a href="https://console.anthropic.com" target="_blank">console.anthropic.com</a></td></tr>
+      <tr><td><code>VITE_OPENAI_API_KEY</code></td><td><a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a> (optional)</td></tr>
+    </tbody>
+  </table>
+
+  <p>LinkedIn and WordPress fields can stay as placeholders — they're not used in clipboard mode.</p>
+
+  <hr>
+
+  <!-- REMINDERS -->
+  <h2 id="reminders">Things to remember</h2>
+
+  <div class="callout danger">
+    <div class="callout-title">🔒 Never share your .env file</div>
+    It contains your secret API keys. Keep it only on your computer.
+  </div>
+
+  <div class="callout warn">
+    <div class="callout-title">⚠ Always use Command Prompt, not PowerShell</div>
+    PowerShell blocks npm scripts on Windows by default.
+  </div>
+
+  <div class="callout warn">
+    <div class="callout-title">⚠ Firebase test mode expires after 30 days</div>
+    Go to Firebase Console → Firestore/Storage → Rules and extend the date.
+  </div>
+
+  <div class="callout">
+    <div class="callout-title">ℹ The app only works while npm run dev is running</div>
+    It's a development server, not a live website. To publish it online, run <code>npm run build</code> and host the <code>dist/</code> folder.
+  </div>
+
+  <hr>
+
+  <!-- SUMMARY -->
+  <h2 id="summary">Summary of what we built</h2>
+
+  <table class="summary-table">
+    <thead><tr><th>What</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>Vite + React setup</td><td>Hot reload, build tools, proper dev environment</td></tr>
+      <tr><td><code>.env</code> file</td><td>Keep API keys secret and out of the code</td></tr>
+      <tr><td>Firebase Firestore</td><td>Save and load posts across sessions</td></tr>
+      <tr><td>Firebase Storage</td><td>Store uploaded images properly</td></tr>
+      <tr><td>Vite proxy</td><td>Get around CORS to call AI APIs from the browser</td></tr>
+      <tr><td>Claude + OpenAI support</td><td>Two AI options to choose from</td></tr>
+      <tr><td>Clipboard copy</td><td>Simpler than full API publishing for now</td></tr>
+      <tr><td>Tone selector</td><td>Control the writing style before generating</td></tr>
+      <tr><td>3 Variations</td><td>Compare options before committing to one</td></tr>
+      <tr><td>Char / word counter</td><td>Stay within LinkedIn's 3000-character limit</td></tr>
+      <tr><td>Revert button</td><td>Undo edits and go back to the AI output</td></tr>
+      <tr><td>HTML preview toggle</td><td>See how WordPress HTML looks before copying</td></tr>
+      <tr><td>Find &amp; Replace</td><td>Edit content faster without scrolling</td></tr>
+      <tr><td><code>start.bat</code></td><td>One double-click to start for non-technical users</td></tr>
+    </tbody>
+  </table>
+
+  <a href="#" class="back-top">↑ Back to top</a>
+
+</main>
+
+<script>
+  // Highlight active sidebar link on scroll
+  const headings = document.querySelectorAll("h2[id], h3[id]");
+  const links = document.querySelectorAll(".sidebar nav a");
+
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+      if (entry.isIntersecting) {
+        links.forEach((l) => l.classList.remove("active"));
+        const active = document.querySelector(`.sidebar nav a[href="#${entry.target.id}"]`);
+        if (active) active.classList.add("active");
+      }
+    });
+  }, { rootMargin: "0px 0px -70% 0px" });
+
+  headings.forEach((h) => observer.observe(h));
+</script>
+</body>
+</html>
